@@ -1231,9 +1231,9 @@
                     const maxDimension = Math.max(height, width);
                     let sampleRate;
                     if (maxDimension > 100) {
-                        sampleRate = Math.floor(maxDimension / 8);
+                        sampleRate = Math.floor(maxDimension / 6); // Show fewer nodes for very large layers
                     } else if (maxDimension > 50) {
-                        sampleRate = Math.floor(maxDimension / 10);
+                        sampleRate = Math.floor(maxDimension / 8);
                     } else {
                         sampleRate = Math.max(1, Math.floor(maxDimension / 10));
                     }
@@ -1548,31 +1548,24 @@
                 const layers = modelData.nodes;
                 const totalLayers = layers.length;
                 
-                // For huge models, sample layers to keep visualization manageable
-                let displayLayers = layers;
-                let samplingRate = 1;
+                // Show all layers, but adjust spacing and detail level based on model size
+                const displayLayers = layers; // Always show all layers
                 
-                if (totalLayers > 100) {
-                    // Calculate sampling rate to show ~100 layers
-                    const targetLayers = 100;
-                    samplingRate = Math.ceil(totalLayers / targetLayers);
-                    
-                    // Create a better distributed sample
-                    displayLayers = [];
-                    for (let i = 0; i < totalLayers; i += samplingRate) {
-                        displayLayers.push(layers[i]);
-                    }
-                    
-                    // Always include the last layer if not already included
-                    if (displayLayers[displayLayers.length - 1] !== layers[totalLayers - 1]) {
-                        displayLayers.push(layers[totalLayers - 1]);
-                    }
-                    
-                    console.log(`Sampling large model: showing ${displayLayers.length} of ${totalLayers} layers (sampling rate: ${samplingRate})`);
+                // Adjust spacing based on number of layers - tighter for larger models
+                let spacing;
+                if (totalLayers > 200) {
+                    spacing = 1.5;
+                } else if (totalLayers > 100) {
+                    spacing = 1.8;
+                } else if (totalLayers > 50) {
+                    spacing = 2;
+                } else if (totalLayers > 30) {
+                    spacing = 2.5;
+                } else {
+                    spacing = 3;
                 }
                 
-                // Adjust spacing based on number of layers
-                const spacing = totalLayers > 50 ? 2 : totalLayers > 30 ? 2.5 : 3;
+                console.log(`Displaying all ${totalLayers} layers with spacing: ${spacing}`);
                 const startX = -(displayLayers.length * spacing) / 2;
                 
                 layerGroupsRef.current = [];
@@ -1606,7 +1599,7 @@
                     
                     // Store sampling info
                     group.userData.originalIndex = originalIndex;
-                    group.userData.samplingRate = samplingRate;
+                    group.userData.displayScale = totalLayers > 100 ? 0.7 : 1.0; // Scale down nodes for huge models
                     
                     layerGroupsRef.current.push(group);
                     
@@ -2062,12 +2055,6 @@
                                                 <span className="stat-label">Total Layers</span>
                                                 <span className="stat-value">{modelData.totalLayers}</span>
                                             </div>
-                                            {modelData.totalLayers > 100 && (
-                                                <div className="stat-item">
-                                                    <span className="stat-label">Showing</span>
-                                                    <span className="stat-value">{layerGroupsRef.current.length}</span>
-                                                </div>
-                                            )}
                                             <div className="stat-item">
                                                 <span className="stat-label">Parameters</span>
                                                 <span className="stat-value">{formatNumber(modelData.totalParams)}</span>
