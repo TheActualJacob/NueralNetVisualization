@@ -2700,6 +2700,76 @@
                             <p className="subtitle">Visualize, Understand, and Analyze Neural Networks</p>
                         </header>
                         
+                        <div style={{
+                            marginTop: '24px',
+                            marginBottom: '24px',
+                            padding: '20px',
+                            background: 'linear-gradient(135deg, #2563eb 0%, #7c3aed 100%)',
+                            borderRadius: '12px',
+                            textAlign: 'center',
+                            boxShadow: '0 4px 16px rgba(37, 99, 235, 0.3)'
+                        }}>
+                            <h3 style={{ color: 'white', fontSize: '1.25rem', marginBottom: '6px', fontWeight: 600 }}>Machine Learning Newsletter</h3>
+                            <p style={{ color: 'rgba(255, 255, 255, 0.9)', marginBottom: '16px', fontSize: '0.9rem' }}>Stay updated with the latest in neural networks and AI visualization</p>
+                            
+                            {newsletterSubmitted ? (
+                                <div style={{ 
+                                    padding: '12px', 
+                                    background: 'rgba(255, 255, 255, 0.2)', 
+                                    borderRadius: '8px',
+                                    color: 'white',
+                                    fontWeight: 500,
+                                    fontSize: '0.95rem'
+                                }}>
+                                    ✓ Thank you for subscribing! You'll receive updates soon.
+                                </div>
+                            ) : (
+                                <form onSubmit={handleNewsletterSignup} style={{ display: 'flex', gap: '12px', maxWidth: '500px', margin: '0 auto', flexWrap: 'wrap', justifyContent: 'center' }}>
+                                    <input
+                                        type="email"
+                                        value={newsletterEmail}
+                                        onChange={(e) => setNewsletterEmail(e.target.value)}
+                                        placeholder="Enter your email"
+                                        style={{
+                                            flex: '1',
+                                            minWidth: '250px',
+                                            padding: '12px 16px',
+                                            borderRadius: '8px',
+                                            border: 'none',
+                                            fontSize: '1rem',
+                                            outline: 'none'
+                                        }}
+                                        required
+                                    />
+                                    <button
+                                        type="submit"
+                                        style={{
+                                            padding: '12px 32px',
+                                            background: 'white',
+                                            color: '#2563eb',
+                                            border: 'none',
+                                            borderRadius: '8px',
+                                            fontSize: '1rem',
+                                            fontWeight: 600,
+                                            cursor: 'pointer',
+                                            transition: 'transform 0.2s, box-shadow 0.2s',
+                                            boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
+                                        }}
+                                        onMouseEnter={(e) => {
+                                            e.target.style.transform = 'translateY(-2px)';
+                                            e.target.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.15)';
+                                        }}
+                                        onMouseLeave={(e) => {
+                                            e.target.style.transform = 'translateY(0)';
+                                            e.target.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.1)';
+                                        }}
+                                    >
+                                        Subscribe
+                                    </button>
+                                </form>
+                            )}
+                        </div>
+                        
                         {!modelData ? (
                             <div className="intro-grid">
                                 <div 
@@ -2936,68 +3006,6 @@
 )}
                             </>
                         )}
-                        
-                        <div style={{
-                            marginTop: '48px',
-                            padding: '32px',
-                            background: 'linear-gradient(135deg, #2563eb 0%, #7c3aed 100%)',
-                            borderRadius: '12px',
-                            textAlign: 'center',
-                            boxShadow: '0 4px 16px rgba(37, 99, 235, 0.3)'
-                        }}>
-                            <h3 style={{ color: 'white', fontSize: '1.5rem', marginBottom: '8px', fontWeight: 600 }}>Machine Learning Newsletter</h3>
-                            <p style={{ color: 'rgba(255, 255, 255, 0.9)', marginBottom: '24px', fontSize: '1rem' }}>Stay updated with the latest in neural networks and AI visualization</p>
-                            
-                            {newsletterSubmitted ? (
-                                <div style={{ 
-                                    padding: '16px', 
-                                    background: 'rgba(255, 255, 255, 0.2)', 
-                                    borderRadius: '8px',
-                                    color: 'white',
-                                    fontWeight: 500
-                                }}>
-                                    ✓ Thank you for subscribing! You'll receive updates soon.
-                                </div>
-                            ) : (
-                                <form onSubmit={handleNewsletterSignup} style={{ display: 'flex', gap: '12px', maxWidth: '500px', margin: '0 auto', flexWrap: 'wrap', justifyContent: 'center' }}>
-                                    <input
-                                        type="email"
-                                        value={newsletterEmail}
-                                        onChange={(e) => setNewsletterEmail(e.target.value)}
-                                        placeholder="Enter your email"
-                                        style={{
-                                            flex: '1',
-                                            minWidth: '250px',
-                                            padding: '12px 16px',
-                                            borderRadius: '8px',
-                                            border: 'none',
-                                            fontSize: '1rem',
-                                            outline: 'none'
-                                        }}
-                                        required
-                                    />
-                                    <button
-                                        type="submit"
-                                        style={{
-                                            padding: '12px 32px',
-                                            background: 'white',
-                                            color: '#2563eb',
-                                            border: 'none',
-                                            borderRadius: '8px',
-                                            fontSize: '1rem',
-                                            fontWeight: 600,
-                                            cursor: 'pointer',
-                                            transition: 'all 0.2s ease',
-                                            boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
-                                        }}
-                                        onMouseOver={(e) => e.target.style.transform = 'scale(1.05)'}
-                                        onMouseOut={(e) => e.target.style.transform = 'scale(1)'}
-                                    >
-                                        Subscribe
-                                    </button>
-                                </form>
-                            )}
-                        </div>
                     </div>
                 </div>
             );
