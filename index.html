@@ -615,6 +615,27 @@
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
 
+        // Shared geometries for instancing (memory optimization)
+        const sharedGeometries = {
+            sphere: new THREE.SphereGeometry(0.12, 8, 8),
+            smallSphere: new THREE.SphereGeometry(0.08, 6, 6),
+            circle: new THREE.CircleGeometry(0.1, 16)
+        };
+
+        // Memory cleanup utility
+        const disposeObject = (obj) => {
+            if (obj.geometry) {
+                obj.geometry.dispose();
+            }
+            if (obj.material) {
+                if (Array.isArray(obj.material)) {
+                    obj.material.forEach(mat => mat.dispose());
+                } else {
+                    obj.material.dispose();
+                }
+            }
+        };
+
         // OrbitControls implementation
         class OrbitControls {
             constructor(camera, domElement) {
@@ -786,6 +807,7 @@
             const [animationSpeed, setAnimationSpeed] = useState(1);
             const [selectedLayer, setSelectedLayer] = useState(null);
             const [cameraView, setCameraView] = useState('default');
+            const [performanceWarning, setPerformanceWarning] = useState(null);
             const canvasRef = useRef(null);
             const sceneRef = useRef(null);
             const rendererRef = useRef(null);
@@ -798,12 +820,14 @@
 
             useEffect(() => {
                 if (modelData && canvasRef.current) {
+                    cleanupVisualization();
                     initVisualization();
                 }
                 return () => {
                     if (animationFrameRef.current) {
                         cancelAnimationFrame(animationFrameRef.current);
                     }
+                    cleanupVisualization();
                     if (rendererRef.current) {
                         rendererRef.current.dispose();
                     }
@@ -895,6 +919,18 @@
                 try {
                     const arrayBuffer = await file.arrayBuffer();
                     const data = await parseONNX(arrayBuffer);
+                    
+                    // Performance warning for large models
+                    if (data.totalLayers > 250 || data.totalParams > 50000000) {
+                        setPerformanceWarning({
+                            layers: data.totalLayers,
+                            params: data.totalParams,
+                            message: `Large model detected (${data.totalLayers} layers, ${(data.totalParams / 1000000).toFixed(1)}M params). Visualization may be slow.`
+                        });
+                    } else {
+                        setPerformanceWarning(null);
+                    }
+                    
                     setModelData(data);
                 } catch (error) {
                     console.error('Error parsing ONNX:', error);
@@ -1241,6 +1277,23 @@
                         // Sample every nth layer to reduce count
                         const sampleRate = Math.ceil(nodes.length / 300);
                         finalNodes = nodes.filter((_, idx) => idx % sampleRate === 0);
+                    } else if (nodes.length > 200) {
+                        // More aggressive sampling for models >200 layers (like Inception V3)
+                        console.log(`Large model with ${nodes.length} layers. Applying smart sampling.`);
+                        // Keep first/last 20 layers, sample middle
+                        const keepFirst = 20;
+                        const keepLast = 20;
+                        const middleStart = keepFirst;
+                        const middleEnd = nodes.length - keepLast;
+                        const middleLayers = nodes.slice(middleStart, middleEnd);
+                        const sampleRate = Math.max(2, Math.ceil(middleLayers.length / 160)); // Target ~200 total
+                        const sampledMiddle = middleLayers.filter((_, idx) => idx % sampleRate === 0);
+                        finalNodes = [
+                            ...nodes.slice(0, keepFirst),
+                            ...sampledMiddle,
+                            ...nodes.slice(-keepLast)
+                        ];
+                        console.log(`Sampled to ${finalNodes.length} layers`);
                     }
                     
                     if (finalNodes.length > 0) {
@@ -1275,6 +1328,55 @@
                     totalParams: 74376,
                     totalLayers: 12
                 };
+            };
+
+            const cleanupVisualization = () => {
+                // Dispose all layer groups and their geometries/materials
+                if (layerGroupsRef.current) {
+                    layerGroupsRef.current.forEach(group => {
+                        if (group && group.parent) {
+                            group.parent.remove(group);
+                        }
+                        group.traverse((obj) => {
+                            disposeObject(obj);
+                        });
+                    });
+                    layerGroupsRef.current = [];
+                }
+                
+                // Dispose connection lines
+                if (connectionLinesRef.current) {
+                    connectionLinesRef.current.forEach(line => {
+                        if (line && line.parent) {
+                            line.parent.remove(line);
+                        }
+                        disposeObject(line);
+                    });
+                    connectionLinesRef.current = [];
+                }
+                
+                // Clear kernel references
+                if (convKernelsRef.current) {
+                    convKernelsRef.current.forEach(kernel => {
+                        if (kernel.mesh) disposeObject(kernel.mesh);
+                        if (kernel.prism) disposeObject(kernel.prism);
+                        if (kernel.wireframe) disposeObject(kernel.wireframe);
+                    });
+                    convKernelsRef.current = [];
+                }
+                
+                // Clear the scene
+                if (sceneRef.current) {
+                    while(sceneRef.current.children.length > 0) {
+                        const obj = sceneRef.current.children[0];
+                        sceneRef.current.remove(obj);
+                        if (obj.type === 'Mesh' || obj.type === 'Line') {
+                            disposeObject(obj);
+                        }
+                    }
+                }
+                
+                console.log('Visualization cleanup complete');
             };
 
             const getLayerColor = (type) => {
@@ -1323,7 +1425,7 @@
                                 emissiveIntensity: 0.3
                             });
                             
-                            const node = new THREE.Mesh(nodeGeometry, nodeMaterial);
+                            const node = new THREE.Mesh(sharedGeometries.smallSphere, nodeMaterial);
                             node.position.set(
                                 h * scale - (height * scale) / 2,
                                 w * scale - (width * scale) / 2,
@@ -1459,7 +1561,7 @@
                 // Input nodes
                 const inputNodes = [];
                 for (let i = 0; i < displayInputs; i++) {
-                    const nodeGeometry = new THREE.SphereGeometry(0.12, 8, 8);
+                    // Use shared geometry for memory efficiency
                     const nodeMaterial = new THREE.MeshPhongMaterial({
                         color: 0x0891b2,
                         transparent: true,
@@ -1468,7 +1570,7 @@
                         emissiveIntensity: 0.2
                     });
                     
-                    const node = new THREE.Mesh(nodeGeometry, nodeMaterial);
+                    const node = new THREE.Mesh(sharedGeometries.sphere, nodeMaterial);
                     const yPos = (i - displayInputs / 2) * inputSpacing;
                     node.position.set(-layerDepth / 2, yPos, 0);
                     node.userData = { activation: Math.random() };
@@ -1479,7 +1581,7 @@
                 // Output nodes
                 const outputNodes = [];
                 for (let i = 0; i < displayOutputs; i++) {
-                    const nodeGeometry = new THREE.SphereGeometry(0.12, 8, 8);
+                    // Use shared geometry for memory efficiency
                     const nodeMaterial = new THREE.MeshPhongMaterial({
                         color: getLayerColor(layer.type),
                         transparent: true,
@@ -1488,7 +1590,7 @@
                         emissiveIntensity: 0.2
                     });
                     
-                    const node = new THREE.Mesh(nodeGeometry, nodeMaterial);
+                    const node = new THREE.Mesh(sharedGeometries.sphere, nodeMaterial);
                     const yPos = (i - displayOutputs / 2) * outputSpacing;
                     node.position.set(layerDepth / 2, yPos, 0);
                     node.userData = { activation: Math.random() };
@@ -1536,7 +1638,7 @@
                 const spacing = 0.25;
                 
                 for (let i = 0; i < displayNodes; i++) {
-                    const nodeGeometry = new THREE.CircleGeometry(0.1, 16);
+                    // Use shared geometry for memory efficiency
                     const nodeMaterial = new THREE.MeshPhongMaterial({
                         color: getLayerColor(layer.type),
                         transparent: true,
@@ -1546,7 +1648,7 @@
                         side: THREE.DoubleSide
                     });
                     
-                    const node = new THREE.Mesh(nodeGeometry, nodeMaterial);
+                    const node = new THREE.Mesh(sharedGeometries.circle, nodeMaterial);
                     const angle = (i / displayNodes) * Math.PI * 2;
                     const radius = 2;
                     node.position.set(
@@ -1622,18 +1724,29 @@
                 const layers = modelData.nodes;
                 const totalLayers = layers.length;
                 
-                // Show all layers, but adjust spacing and detail level based on model size
-                const displayLayers = layers; // Always show all layers
+                // Limit layers displayed based on model size for performance
+                let displayLayers;
+                if (totalLayers > 300) {
+                    // For very large models, sample more aggressively
+                    const keepFirst = 30;
+                    const keepLast = 30;
+                    const sampleRate = Math.ceil((totalLayers - keepFirst - keepLast) / 140); // Target ~200 total
+                    const middle = layers.slice(keepFirst, -keepLast).filter((_, idx) => idx % sampleRate === 0);
+                    displayLayers = [...layers.slice(0, keepFirst), ...middle, ...layers.slice(-keepLast)];
+                    console.log(`Performance mode: Displaying ${displayLayers.length} of ${totalLayers} layers`);
+                } else {
+                    displayLayers = layers; // Show all layers
+                }
                 
                 // Adjust spacing based on number of layers - tighter for larger models
                 let spacing;
-                if (totalLayers > 200) {
+                if (displayLayers.length > 200) {
                     spacing = 1.5;
-                } else if (totalLayers > 100) {
+                } else if (displayLayers.length > 100) {
                     spacing = 1.8;
-                } else if (totalLayers > 50) {
+                } else if (displayLayers.length > 50) {
                     spacing = 2;
-                } else if (totalLayers > 30) {
+                } else if (displayLayers.length > 30) {
                     spacing = 2.5;
                 } else {
                     spacing = 3;
@@ -2028,6 +2141,46 @@
                     {loading && (
                         <div className="loading-overlay">
                             <div className="spinner"></div>
+                        </div>
+                    )}
+                    
+                    {performanceWarning && (
+                        <div style={{
+                            position: 'fixed',
+                            top: '20px',
+                            right: '20px',
+                            background: '#fef3c7',
+                            border: '2px solid #f59e0b',
+                            borderRadius: '8px',
+                            padding: '16px 20px',
+                            maxWidth: '400px',
+                            zIndex: 1000,
+                            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)'
+                        }}>
+                            <div style={{ display: 'flex', alignItems: 'start', gap: '12px' }}>
+                                <svg style={{ width: '24px', height: '24px', flexShrink: 0, stroke: '#f59e0b', fill: 'none', strokeWidth: 2 }} viewBox="0 0 24 24">
+                                    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                                    <line x1="12" y1="9" x2="12" y2="13"/>
+                                    <line x1="12" y1="17" x2="12.01" y2="17"/>
+                                </svg>
+                                <div>
+                                    <div style={{ fontWeight: 600, color: '#92400e', marginBottom: '4px' }}>Performance Warning</div>
+                                    <div style={{ fontSize: '0.875rem', color: '#78350f' }}>{performanceWarning.message}</div>
+                                </div>
+                                <button 
+                                    onClick={() => setPerformanceWarning(null)}
+                                    style={{ 
+                                        marginLeft: 'auto', 
+                                        background: 'none', 
+                                        border: 'none', 
+                                        cursor: 'pointer',
+                                        color: '#92400e',
+                                        fontSize: '20px',
+                                        padding: '0',
+                                        lineHeight: 1
+                                    }}
+                                >×</button>
+                            </div>
                         </div>
                     )}
                     
