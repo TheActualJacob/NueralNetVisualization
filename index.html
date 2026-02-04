@@ -1170,137 +1170,138 @@
                 console.log('Using fallback ONNX parser - attempting basic binary parsing');
                 
                 try {
-                    // Try to parse without the proto definition by manually reading the binary
-                    // ONNX files have a structure we can partially decode
+                    // Manually parse ONNX protobuf structure
+                    // ONNX uses protobuf encoding where each field has: tag (field_number << 3 | wire_type)
+                    const nodes = [];
+                    let totalParams = 0;
+                    
+                    // Convert to text for string matching (operation names are UTF-8 strings in the binary)
                     const decoder = new TextDecoder('utf-8', { fatal: false });
                     const text = decoder.decode(uint8Array);
                     
-                    const nodes = [];
-                    const layerNames = [];
-                    let totalParams = 0;
+                    // Find all operation type strings and their positions
+                    const opTypes = ['Conv', 'Relu', 'MaxPool', 'Gemm', 'MatMul', 'Add', 'Mul', 'Concat', 
+                                     'Reshape', 'Transpose', 'Sigmoid', 'Softmax', 'BatchNormalization', 
+                                     'AveragePool', 'GlobalAveragePool', 'Flatten'];
                     
-                    // Look for operation names in the binary
-                    const operations = ['Conv', 'Relu', 'MaxPool', 'Gemm', 'Flatten', 'Reshape'];
-                    
-                    operations.forEach(op => {
-                        const regex = new RegExp(op, 'gi');
-                        const matches = text.match(regex);
-                        if (matches) {
-                            console.log(`Found ${matches.length} ${op} operations`);
+                    const foundOps = [];
+                    opTypes.forEach(opType => {
+                        let index = text.indexOf(opType);
+                        while (index !== -1) {
+                            foundOps.push({ type: opType, position: index });
+                            index = text.indexOf(opType, index + 1);
                         }
                     });
                     
-                    // Try to extract layer sequence by scanning for common patterns
-                    let currentShape = [3, 32, 32];
+                    // Sort by position to get layer order
+                    foundOps.sort((a, b) => a.position - b.position);
+                    
+                    console.log(`Found ${foundOps.length} total operations in sequence`);
+                    
+                    // Track shapes through the network
+                    let currentShape = [3, 640, 640]; // Common input for YOLOv8
                     let layerIndex = 0;
                     
-                    // Scan for Conv operations
-                    const convMatches = [...text.matchAll(/Conv/gi)];
-                    convMatches.forEach((match, idx) => {
-                        if (idx < 10) { // Limit to avoid duplicates
-                            const outChannels = idx === 0 ? 6 : 16;
-                            const params = currentShape[0] * outChannels * 5 * 5;
-                            const h = Math.floor((currentShape[1] - 5) + 1);
-                            const w = Math.floor((currentShape[2] - 5) + 1);
-                            
-                            nodes.push({
-                                name: `conv${idx + 1}`,
-                                type: 'Conv2d',
-                                params: params,
-                                nodes: { input: currentShape, output: [outChannels, h, w] },
-                                input: [`layer${layerIndex}`],
-                                output: [`layer${layerIndex + 1}`],
-                                attributes: { kernel_size: [5, 5], stride: [1, 1], in_channels: currentShape[0], out_channels: outChannels }
-                            });
-                            
-                            totalParams += params;
-                            currentShape = [outChannels, h, w];
-                            layerIndex++;
-                            
-                            // Add ReLU after conv
-                            nodes.push({
-                                name: `relu${idx + 1}`,
-                                type: 'ReLU',
-                                params: 0,
-                                nodes: { input: currentShape, output: currentShape },
-                                input: [`layer${layerIndex}`],
-                                output: [`layer${layerIndex + 1}`]
-                            });
-                            layerIndex++;
-                            
-                            // Add MaxPool after ReLU
-                            const pooledShape = [currentShape[0], Math.floor(currentShape[1] / 2), Math.floor(currentShape[2] / 2)];
-                            nodes.push({
-                                name: `pool${idx + 1}`,
-                                type: 'MaxPool2d',
-                                params: 0,
-                                nodes: { input: currentShape, output: pooledShape },
-                                input: [`layer${layerIndex}`],
-                                output: [`layer${layerIndex + 1}`],
-                                attributes: { kernel_size: [2, 2], stride: [2, 2] }
-                            });
-                            currentShape = pooledShape;
-                            layerIndex++;
-                        }
-                    });
+                    // Track shapes through the network
+                    let currentShape = [3, 640, 640]; // Common input for YOLOv8
+                    let layerIndex = 0;
                     
-                    // Add flatten
-                    const flatSize = currentShape[0] * currentShape[1] * currentShape[2];
-                    nodes.push({
-                        name: 'flatten',
-                        type: 'Flatten',
-                        params: 0,
-                        nodes: { input: currentShape, output: [flatSize] },
-                        input: [`layer${layerIndex}`],
-                        output: [`layer${layerIndex + 1}`]
-                    });
-                    currentShape = [flatSize];
-                    layerIndex++;
-                    
-                    // Scan for Gemm (Linear) operations
-                    const gemmMatches = [...text.matchAll(/Gemm/gi)];
-                    const linearSizes = [120, 84, 24, 12, 2]; // Common sizes
-                    
-                    gemmMatches.forEach((match, idx) => {
-                        if (idx < linearSizes.length) {
-                            const outFeatures = linearSizes[idx];
-                            const params = currentShape[0] * outFeatures;
+                    // Process operations in sequence (limit duplicates)
+                    const seenOps = new Map();
+                    foundOps.forEach(op => {
+                        const key = `${op.type}_${op.position}`;
+                        if (seenOps.has(key)) return;
+                        seenOps.set(key, true);
+                        
+                        const opType = op.type;
+                        let layerType = opType;
+                        let outputShape = [...currentShape];
+                        let params = 0;
+                        let attributes = {};
+                        
+                        // Map operation types
+                        if (opType === 'Conv') {
+                            layerType = 'Conv2d';
+                            // Typical conv reduces spatial dimensions slightly
+                            const outChannels = currentShape[0] === 3 ? 32 : Math.min(currentShape[0] * 2, 512);
+                            const kernelSize = 3;
+                            const stride = 1;
+                            const padding = 1;
                             
-                            nodes.push({
-                                name: `fc${idx + 1}`,
-                                type: 'Linear',
-                                params: params,
-                                nodes: { input: currentShape, output: [outFeatures] },
-                                input: [`layer${layerIndex}`],
-                                output: [`layer${layerIndex + 1}`],
-                                attributes: { in_features: currentShape[0], out_features: outFeatures }
-                            });
-                            
-                            totalParams += params;
-                            currentShape = [outFeatures];
-                            layerIndex++;
-                            
-                            // Add ReLU after linear (except last layer)
-                            if (idx < linearSizes.length - 1) {
-                                nodes.push({
-                                    name: `relu_fc${idx + 1}`,
-                                    type: 'ReLU',
-                                    params: 0,
-                                    nodes: { input: currentShape, output: currentShape },
-                                    input: [`layer${layerIndex}`],
-                                    output: [`layer${layerIndex + 1}`]
-                                });
-                                layerIndex++;
+                            if (currentShape.length === 3) {
+                                const [c, h, w] = currentShape;
+                                const outH = Math.floor((h + 2 * padding - kernelSize) / stride) + 1;
+                                const outW = Math.floor((w + 2 * padding - kernelSize) / stride) + 1;
+                                outputShape = [outChannels, outH, outW];
+                                params = outChannels * c * kernelSize * kernelSize;
                             }
+                            
+                            attributes = {
+                                kernel_size: [kernelSize, kernelSize],
+                                stride: [stride, stride],
+                                in_channels: currentShape[0],
+                                out_channels: outChannels
+                            };
+                        } else if (opType === 'Relu') {
+                            layerType = 'ReLU';
+                        } else if (opType === 'MaxPool' || opType === 'AveragePool') {
+                            layerType = opType === 'MaxPool' ? 'MaxPool2d' : 'AvgPool2d';
+                            const kernelSize = 2;
+                            const stride = 2;
+                            
+                            if (currentShape.length === 3) {
+                                const [c, h, w] = currentShape;
+                                outputShape = [c, Math.floor(h / stride), Math.floor(w / stride)];
+                            }
+                            
+                            attributes = { kernel_size: [kernelSize, kernelSize], stride: [stride, stride] };
+                        } else if (opType === 'Gemm' || opType === 'MatMul') {
+                            layerType = 'Linear';
+                            const inFeatures = currentShape.reduce((a, b) => a * b, 1);
+                            const outFeatures = Math.max(Math.floor(inFeatures / 2), 10);
+                            outputShape = [outFeatures];
+                            params = inFeatures * outFeatures;
+                            attributes = { in_features: inFeatures, out_features: outFeatures };
+                        } else if (opType === 'Flatten' || opType === 'Reshape') {
+                            layerType = 'Flatten';
+                            if (currentShape.length > 1) {
+                                outputShape = [currentShape.reduce((a, b) => a * b, 1)];
+                            }
+                        } else if (opType === 'BatchNormalization') {
+                            layerType = 'BatchNorm';
+                        } else if (opType === 'Add' || opType === 'Concat' || opType === 'Mul') {
+                            layerType = opType;
                         }
+                        
+                        nodes.push({
+                            name: `${layerType.toLowerCase()}_${layerIndex}`,
+                            type: layerType,
+                            params: params,
+                            nodes: { input: currentShape, output: outputShape },
+                            input: [`layer${layerIndex}`],
+                            output: [`layer${layerIndex + 1}`],
+                            attributes: attributes
+                        });
+                        
+                        totalParams += params;
+                        currentShape = outputShape;
+                        layerIndex++;
                     });
                     
-                    if (nodes.length > 0) {
-                        console.log(`Fallback parser extracted ${nodes.length} layers`);
+                    // Remove consecutive duplicates (same type in a row often means false positives)
+                    const filteredNodes = [];
+                    for (let i = 0; i < nodes.length; i++) {
+                        if (i === 0 || nodes[i].type !== nodes[i-1].type || nodes[i].type === 'Conv2d') {
+                            filteredNodes.push(nodes[i]);
+                        }
+                    }
+                    
+                    if (filteredNodes.length > 0) {
+                        console.log(`Fallback parser extracted ${filteredNodes.length} layers`);
                         return {
-                            nodes: nodes,
+                            nodes: filteredNodes,
                             totalParams,
-                            totalLayers: nodes.length
+                            totalLayers: filteredNodes.length
                         };
                     }
                 } catch (e) {
