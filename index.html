@@ -1038,6 +1038,36 @@
                     setLoading(false);
                 }
             };
+            
+            const loadExampleModel = async () => {
+                setLoading(true);
+                try {
+                    const response = await fetch('examples/bat_resnext26ts_Opset16.onnx');
+                    if (!response.ok) {
+                        throw new Error('Failed to load example model');
+                    }
+                    const arrayBuffer = await response.arrayBuffer();
+                    const data = await parseONNX(arrayBuffer);
+                    
+                    // Performance warning for large models
+                    if (data.totalLayers > 250 || data.totalParams > 50000000) {
+                        setPerformanceWarning({
+                            layers: data.totalLayers,
+                            params: data.totalParams,
+                            message: `Large model detected (${data.totalLayers} layers, ${(data.totalParams / 1000000).toFixed(1)}M params). Visualization may be slow.`
+                        });
+                    } else {
+                        setPerformanceWarning(null);
+                    }
+                    
+                    setModelData(data);
+                } catch (error) {
+                    console.error('Error loading example:', error);
+                    alert('Error loading example model. Please upload your own ONNX file.');
+                } finally {
+                    setLoading(false);
+                }
+            };
 
             const parseONNX = async (arrayBuffer) => {
                 try {
@@ -1092,13 +1122,28 @@
                             // Map ONNX op types to PyTorch layer types
                             let layerType = opType;
                             if (opType === 'Conv') layerType = 'Conv2d';
-                            else if (opType === 'Gemm' || opType === 'MatMul') layerType = 'Linear';
+                            else if (opType === 'Gemm' || opType === 'MatMul' || opType === 'LinearLayer') layerType = 'Linear';
                             else if (opType === 'Relu') layerType = 'ReLU';
+                            else if (opType === 'LeakyRelu') layerType = 'LeakyReLU';
+                            else if (opType === 'Sigmoid') layerType = 'Sigmoid';
+                            else if (opType === 'Softmax') layerType = 'Softmax';
+                            else if (opType === 'Tanh') layerType = 'ReLU'; // Treat as activation
                             else if (opType === 'MaxPool') layerType = 'MaxPool2d';
                             else if (opType === 'AveragePool' || opType === 'GlobalAveragePool') layerType = 'AvgPool2d';
                             else if (opType === 'BatchNormalization') layerType = 'BatchNorm';
+                            else if (opType === 'InstanceNormalization') layerType = 'InstanceNorm';
+                            else if (opType === 'LayerNormalization' || opType === 'GroupNormalization') layerType = 'Normalization';
                             else if (opType === 'Concat') layerType = 'Concat';
                             else if (opType === 'Add') layerType = 'Add';
+                            else if (opType === 'Mul' || opType === 'Div') layerType = 'Mul';
+                            else if (opType === 'Flatten') layerType = 'Flatten';
+                            else if (opType === 'Reshape' || opType === 'Squeeze' || opType === 'Unsqueeze') layerType = 'Reshape';
+                            else if (opType === 'Transpose') layerType = 'Transpose';
+                            else if (opType === 'Dropout' || opType === 'Identity') layerType = 'Unknown'; // Skip these
+                            else if (opType === 'Clip' || opType === 'Pad' || opType === 'Slice' || opType === 'Split') layerType = 'Reshape';
+                            else if (opType === 'Constant' || opType === 'ConstantOfShape') layerType = 'Unknown'; // Skip these
+                            else if (opType === 'Shape' || opType === 'Gather' || opType === 'Cast') layerType = 'Unknown'; // Skip these
+                            else if (opType === 'Resize' || opType === 'Upsample') layerType = 'Reshape';
                             
                             // Try to get input shape
                             let inputShape = [1];
@@ -1239,10 +1284,12 @@
                     // Find all operation type strings and their positions
                     const opTypes = ['Conv', 'Relu', 'MaxPool', 'Gemm', 'MatMul', 'Add', 'Mul', 'Concat', 
                                      'Reshape', 'Transpose', 'Sigmoid', 'Softmax', 'BatchNormalization', 
-                                     'AveragePool', 'GlobalAveragePool', 'Flatten'];
+                                     'AveragePool', 'GlobalAveragePool', 'Flatten', 'Clip', 'LeakyRelu',
+                                     'Dropout', 'Identity', 'Pad', 'Slice', 'Split', 'Squeeze', 'Unsqueeze',
+                                     'InstanceNormalization', 'GroupNormalization', 'LayerNormalization'];
                     
                     const foundOps = [];
-                    const minDistance = 20; // Minimum bytes between consecutive operation definitions
+                    const minDistance = 10; // Reduced further to catch more operations
                     let lastPosition = -minDistance;
                     
                     opTypes.forEach(opType => {
@@ -1263,12 +1310,13 @@
                     
                     // Further filter: remove operations that appear too close together (likely false positives)
                     const filteredByDistance = [];
+                    const secondaryMinDistance = 8; // Allow closer operations
                     foundOps.forEach((op, idx) => {
                         if (idx === 0) {
                             filteredByDistance.push(op);
                         } else {
                             const prevOp = filteredByDistance[filteredByDistance.length - 1];
-                            if (op.position - prevOp.position > minDistance) {
+                            if (op.position - prevOp.position > secondaryMinDistance) {
                                 filteredByDistance.push(op);
                             }
                         }
@@ -1281,16 +1329,9 @@
                     let layerIndex = 0;
                     let lastOpType = null;
                     
-                    // Process operations in sequence (limit duplicates and consecutive same types)
+                    // Process operations in sequence
                     const seenOps = new Map();
                     filteredByDistance.forEach(op => {
-                        const key = `${op.type}_${op.position}`;
-                        if (seenOps.has(key)) return;
-                        
-                        // Skip if same type as previous (likely false positive duplicate)
-                        if (op.type === lastOpType && op.type !== 'Conv' && op.type !== 'Add') return;
-                        
-                        seenOps.set(key, true);
                         lastOpType = op.type;
                         
                         const opType = op.type;
@@ -1324,6 +1365,12 @@
                             };
                         } else if (opType === 'Relu') {
                             layerType = 'ReLU';
+                        } else if (opType === 'LeakyRelu') {
+                            layerType = 'LeakyReLU';
+                        } else if (opType === 'Sigmoid') {
+                            layerType = 'Sigmoid';
+                        } else if (opType === 'Softmax') {
+                            layerType = 'Softmax';
                         } else if (opType === 'MaxPool' || opType === 'AveragePool') {
                             layerType = opType === 'MaxPool' ? 'MaxPool2d' : 'AvgPool2d';
                             const kernelSize = 2;
@@ -1349,8 +1396,20 @@
                             }
                         } else if (opType === 'BatchNormalization') {
                             layerType = 'BatchNorm';
-                        } else if (opType === 'Add' || opType === 'Concat' || opType === 'Mul') {
-                            layerType = opType;
+                        } else if (opType === 'InstanceNormalization') {
+                            layerType = 'InstanceNorm';
+                        } else if (opType === 'LayerNormalization' || opType === 'GroupNormalization') {
+                            layerType = 'Normalization';
+                        } else if (opType === 'Add' || opType === 'Mul') {
+                            layerType = opType; // Keep as-is for special visualization
+                        } else if (opType === 'Concat') {
+                            layerType = 'Concat';
+                        } else if (opType === 'Dropout' || opType === 'Identity') {
+                            layerType = 'Unknown'; // Skip these
+                        } else if (opType === 'Pad' || opType === 'Slice' || opType === 'Split' || opType === 'Squeeze' || opType === 'Unsqueeze' || opType === 'Clip') {
+                            layerType = 'Reshape';
+                        } else if (opType === 'Transpose') {
+                            layerType = 'Transpose';
                         }
                         
                         nodes.push({
@@ -1480,13 +1539,25 @@
 
             const getLayerColor = (type) => {
                 const colors = {
-                    'Conv2d': 0x2563eb,      // Blue
-                    'Linear': 0x0891b2,      // Cyan
-                    'ReLU': 0xf59e0b,        // Amber
-                    'MaxPool2d': 0x10b981,   // Emerald
-                    'Flatten': 0x8b5cf6,     // Purple
+                    'Conv2d': 0x2563eb,        // Blue
+                    'Linear': 0x0891b2,        // Cyan
+                    'ReLU': 0xf59e0b,          // Amber
+                    'LeakyReLU': 0xfbbf24,     // Yellow
+                    'Sigmoid': 0xf59e0b,       // Amber
+                    'Softmax': 0xf97316,       // Orange
+                    'MaxPool2d': 0x10b981,     // Emerald
+                    'AvgPool2d': 0x14b8a6,     // Teal
+                    'Flatten': 0x8b5cf6,       // Purple
+                    'Reshape': 0xa855f7,       // Purple variant
+                    'Transpose': 0x9333ea,     // Purple variant
+                    'BatchNorm': 0x06b6d4,     // Sky blue
+                    'InstanceNorm': 0x0ea5e9,  // Blue variant
+                    'Normalization': 0x0284c7, // Blue variant
+                    'Add': 0xec4899,           // Pink (residual connections)
+                    'Mul': 0xdb2777,           // Pink variant
+                    'Concat': 0xd946ef         // Fuchsia
                 };
-                return colors[type] || 0x6b7280;
+                return colors[type] || 0x6b7280; // Default gray
             };
 
             const createConvLayer = (layer, position, scene) => {
@@ -1773,6 +1844,191 @@
                 return group;
             };
 
+            const createStructuralLayer = (layer, position, scene) => {
+                // For Add, Mul, Concat - show with more logical representations
+                const group = new THREE.Group();
+                const layerColor = getLayerColor(layer.type);
+                
+                if (layer.type === 'Add') {
+                    // Residual/skip connection - show as merging streams (Y-shape)
+                    const cylinderGeo = new THREE.CylinderGeometry(0.2, 0.2, 1.5, 8);
+                    const material = new THREE.MeshPhongMaterial({
+                        color: layerColor,
+                        transparent: true,
+                        opacity: 0.7,
+                        emissive: layerColor,
+                        emissiveIntensity: 0.4
+                    });
+                    
+                    // Main vertical trunk
+                    const trunk = new THREE.Mesh(cylinderGeo, material);
+                    trunk.rotation.z = Math.PI / 2;
+                    group.add(trunk);
+                    
+                    // Two input branches
+                    const branch1 = new THREE.Mesh(cylinderGeo, material.clone());
+                    branch1.scale.set(0.7, 0.7, 0.7);
+                    branch1.position.set(-0.5, 0.6, 0.6);
+                    branch1.rotation.z = Math.PI / 2 + Math.PI / 6;
+                    branch1.rotation.y = Math.PI / 6;
+                    group.add(branch1);
+                    
+                    const branch2 = new THREE.Mesh(cylinderGeo, material.clone());
+                    branch2.scale.set(0.7, 0.7, 0.7);
+                    branch2.position.set(-0.5, -0.6, -0.6);
+                    branch2.rotation.z = Math.PI / 2 - Math.PI / 6;
+                    branch2.rotation.y = -Math.PI / 6;
+                    group.add(branch2);
+                    
+                    // Add glowing sphere at junction
+                    const sphereGeo = new THREE.SphereGeometry(0.3, 12, 12);
+                    const sphereMat = new THREE.MeshPhongMaterial({
+                        color: layerColor,
+                        transparent: true,
+                        opacity: 0.8,
+                        emissive: layerColor,
+                        emissiveIntensity: 0.6
+                    });
+                    const junction = new THREE.Mesh(sphereGeo, sphereMat);
+                    group.add(junction);
+                    
+                } else if (layer.type === 'Mul') {
+                    // Element-wise multiplication - show as interlocking gears/rings
+                    const torusGeo = new THREE.TorusGeometry(0.6, 0.15, 8, 12);
+                    const material = new THREE.MeshPhongMaterial({
+                        color: layerColor,
+                        transparent: true,
+                        opacity: 0.7,
+                        emissive: layerColor,
+                        emissiveIntensity: 0.4
+                    });
+                    
+                    const ring1 = new THREE.Mesh(torusGeo, material);
+                    ring1.rotation.y = Math.PI / 4;
+                    group.add(ring1);
+                    
+                    const ring2 = new THREE.Mesh(torusGeo, material.clone());
+                    ring2.rotation.y = -Math.PI / 4;
+                    ring2.rotation.z = Math.PI / 2;
+                    group.add(ring2);
+                    
+                } else if (layer.type === 'Concat') {
+                    // Concatenation - show as funnel with multiple inputs merging
+                    const coneGeo = new THREE.ConeGeometry(0.8, 2, 6);
+                    const material = new THREE.MeshPhongMaterial({
+                        color: layerColor,
+                        transparent: true,
+                        opacity: 0.6,
+                        emissive: layerColor,
+                        emissiveIntensity: 0.3
+                    });
+                    
+                    // Main funnel
+                    const funnel = new THREE.Mesh(coneGeo, material);
+                    funnel.rotation.z = -Math.PI / 2;
+                    group.add(funnel);
+                    
+                    // Input pipes
+                    const pipeGeo = new THREE.CylinderGeometry(0.15, 0.15, 1, 8);
+                    for (let i = 0; i < 3; i++) {
+                        const pipe = new THREE.Mesh(pipeGeo, material.clone());
+                        const angle = (i / 3) * Math.PI * 2;
+                        pipe.position.x = -1.2;
+                        pipe.position.y = Math.cos(angle) * 0.8;
+                        pipe.position.z = Math.sin(angle) * 0.8;
+                        pipe.rotation.z = Math.PI / 2;
+                        group.add(pipe);
+                    }
+                    
+                    // Add wireframe outline
+                    const wireframeMat = new THREE.MeshBasicMaterial({
+                        color: layerColor,
+                        wireframe: true,
+                        transparent: true,
+                        opacity: 0.5
+                    });
+                    const wireframe = new THREE.Mesh(coneGeo, wireframeMat);
+                    wireframe.rotation.z = -Math.PI / 2;
+                    group.add(wireframe);
+                }
+                
+                group.position.copy(position);
+                group.userData = { layer, nodes: [] };
+                scene.add(group);
+                return group;
+            };
+
+            const createShapeTransformLayer = (layer, position, scene) => {
+                // For Reshape, Transpose, Flatten - show as simple transparent sphere
+                const group = new THREE.Group();
+                const layerColor = getLayerColor(layer.type);
+                
+                if (layer.type === 'Transpose') {
+                    // Show as rotating arrows or twisted ribbon
+                    const arrowCount = 4;
+                    for (let i = 0; i < arrowCount; i++) {
+                        const coneGeo = new THREE.ConeGeometry(0.3, 1.2, 6);
+                        const material = new THREE.MeshPhongMaterial({
+                            color: layerColor,
+                            transparent: true,
+                            opacity: 0.7,
+                            emissive: layerColor,
+                            emissiveIntensity: 0.3
+                        });
+                        const arrow = new THREE.Mesh(coneGeo, material);
+                        const angle = (i / arrowCount) * Math.PI * 2;
+                        arrow.position.y = Math.cos(angle) * 1.2;
+                        arrow.position.z = Math.sin(angle) * 1.2;
+                        arrow.rotation.z = angle;
+                        arrow.rotation.x = Math.PI / 2;
+                        group.add(arrow);
+                    }
+                } else if (layer.type === 'Flatten') {
+                    // Show as collapsing funnel
+                    const cylinderGeo = new THREE.CylinderGeometry(0.3, 1.2, 2, 8);
+                    const material = new THREE.MeshPhongMaterial({
+                        color: layerColor,
+                        transparent: true,
+                        opacity: 0.6,
+                        emissive: layerColor,
+                        emissiveIntensity: 0.3,
+                        wireframe: false
+                    });
+                    const funnel = new THREE.Mesh(cylinderGeo, material);
+                    funnel.rotation.z = Math.PI / 2;
+                    group.add(funnel);
+                    
+                    // Add wireframe outline
+                    const wireframeMat = new THREE.MeshBasicMaterial({
+                        color: layerColor,
+                        wireframe: true,
+                        transparent: true,
+                        opacity: 0.8
+                    });
+                    const wireframe = new THREE.Mesh(cylinderGeo, wireframeMat);
+                    wireframe.rotation.z = Math.PI / 2;
+                    group.add(wireframe);
+                } else {
+                    // Reshape - show as simple transparent wireframe sphere
+                    const sphereGeo = new THREE.SphereGeometry(0.5, 12, 12);
+                    const material = new THREE.MeshPhongMaterial({
+                        color: layerColor,
+                        transparent: true,
+                        opacity: 0.3,
+                        emissive: layerColor,
+                        emissiveIntensity: 0.2,
+                        wireframe: true
+                    });
+                    const sphere = new THREE.Mesh(sphereGeo, material);
+                    group.add(sphere);
+                }
+                
+                group.position.copy(position);
+                group.userData = { layer, nodes: [] };
+                scene.add(group);
+                return group;
+            };
+
             const initVisualization = () => {
                 const canvas = canvasRef.current;
                 const scene = new THREE.Scene();
@@ -1852,14 +2108,16 @@
                 }
                 
                 console.log(`Displaying all ${totalLayers} layers with spacing: ${spacing}`);
-                const startX = -(displayLayers.length * spacing) / 2;
                 
                 layerGroupsRef.current = [];
                 convKernelsRef.current = [];
                 connectionLinesRef.current = [];
                 
                 displayLayers.forEach((layer, index) => {
-                    const position = new THREE.Vector3(startX + index * spacing, 0, 0);
+                    // Calculate position based on how many layers we've actually added (no gaps)
+                    const actualLayerCount = layerGroupsRef.current.length;
+                    const startX = -(displayLayers.length * spacing) / 2; // Initial estimate
+                    const position = new THREE.Vector3(startX + actualLayerCount * spacing, 0, 0);
                     let group;
                     
                     // Store original index for reference
@@ -1869,29 +2127,34 @@
                         group = createConvLayer(layer, position, scene);
                     } else if (layer.type === 'Linear') {
                         group = createLinearLayer(layer, position, scene);
-                    } else if (layer.type === 'ReLU' || layer.type === 'Sigmoid' || layer.type === 'Softmax') {
+                    } else if (layer.type === 'ReLU' || layer.type === 'LeakyReLU' || layer.type === 'Sigmoid' || layer.type === 'Softmax') {
                         group = createActivationLayer(layer, position, scene);
                     } else if (layer.type === 'MaxPool2d' || layer.type === 'AvgPool2d') {
                         group = createConvLayer(layer, position, scene);
-                    } else if (layer.type === 'Flatten' || layer.type === 'Reshape') {
+                    } else if (layer.type === 'Flatten') {
+                        group = createShapeTransformLayer(layer, position, scene);
+                    } else if (layer.type === 'Reshape' || layer.type === 'Transpose') {
+                        group = createShapeTransformLayer(layer, position, scene);
+                    } else if (layer.type === 'BatchNorm' || layer.type === 'InstanceNorm' || layer.type === 'Normalization') {
                         group = createActivationLayer(layer, position, scene);
-                    } else if (layer.type === 'BatchNorm' || layer.type === 'Concat' || layer.type === 'Add') {
-                        group = createActivationLayer(layer, position, scene);
+                    } else if (layer.type === 'Add' || layer.type === 'Mul' || layer.type === 'Concat') {
+                        group = createStructuralLayer(layer, position, scene);
                     } else {
-                        group = new THREE.Group();
-                        group.position.copy(position);
-                        scene.add(group);
+                        // Unknown layer type - skip it entirely
+                        console.log(`Skipping layer type: ${layer.type}`);
+                        return; // Skip this layer completely
                     }
+                    
+                    // Only proceed if group was created
+                    if (!group) return;
                     
                     // Store sampling info
                     group.userData.originalIndex = originalIndex;
                     group.userData.displayScale = totalLayers > 100 ? 0.7 : 1.0; // Scale down nodes for huge models
                     
-                    layerGroupsRef.current.push(group);
-                    
-                    // Add connections between layers
-                    if (index > 0) {
-                        const prevGroup = layerGroupsRef.current[index - 1];
+                    // Add connections between layers (connect to last valid group)
+                    if (layerGroupsRef.current.length > 0) {
+                        const prevGroup = layerGroupsRef.current[layerGroupsRef.current.length - 1];
                         const points = [
                             prevGroup.position.clone(),
                             group.position.clone()
@@ -1906,9 +2169,34 @@
                                 linewidth: 3
                             })
                         );
-                        connectionLine.userData = { fromIndex: index - 1, toIndex: index };
+                        connectionLine.userData = { 
+                            fromIndex: layerGroupsRef.current.length - 1, 
+                            toIndex: layerGroupsRef.current.length 
+                        };
                         scene.add(connectionLine);
                         connectionLinesRef.current.push(connectionLine);
+                    }
+                    
+                    layerGroupsRef.current.push(group);
+                });
+                
+                // Recenter all layers based on actual count (no gaps)
+                const actualLayerCount = layerGroupsRef.current.length;
+                const actualStartX = -(actualLayerCount * spacing) / 2;
+                layerGroupsRef.current.forEach((group, idx) => {
+                    group.position.x = actualStartX + idx * spacing;
+                });
+                
+                // Update connection line positions
+                connectionLinesRef.current.forEach((line) => {
+                    const fromIdx = line.userData.fromIndex;
+                    const toIdx = line.userData.toIndex;
+                    if (layerGroupsRef.current[fromIdx] && layerGroupsRef.current[toIdx]) {
+                        const points = [
+                            layerGroupsRef.current[fromIdx].position.clone(),
+                            layerGroupsRef.current[toIdx].position.clone()
+                        ];
+                        line.geometry.setFromPoints(points);
                     }
                 });
                 
@@ -1917,9 +2205,9 @@
                 cameraRef.current = camera;
                 controlsRef.current = controls;
                 
-                // Adjust camera position based on model width
-                const modelWidth = displayLayers.length * spacing;
-                const cameraDistance = Math.max(30, modelWidth * 0.8);
+                // Adjust camera position based on actual model width (excluding skipped layers)
+                const actualModelWidth = actualLayerCount * spacing;
+                const cameraDistance = Math.max(30, actualModelWidth * 0.8);
                 camera.position.set(0, 8, -cameraDistance);
                 controls.target.set(0, 0, 0);
                 controls.update();
@@ -2373,6 +2661,16 @@
                                             />
                                             <button className="upload-button">
                                                 <span>Select File</span>
+                                            </button>
+                                        </div>
+                                        <div style={{ marginTop: '20px', textAlign: 'center' }}>
+                                            <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', marginBottom: '12px' }}>or try an example:</p>
+                                            <button 
+                                                className="upload-button" 
+                                                onClick={loadExampleModel}
+                                                style={{ background: 'var(--success)', cursor: 'pointer' }}
+                                            >
+                                                <span>Load ResNeXt Example</span>
                                             </button>
                                         </div>
                                     </div>
