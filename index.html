@@ -911,9 +911,87 @@
                     
                     console.log('Starting ONNX parse, file size:', uint8Array.length);
                     
-                    // Try parsing with protobuf - but this may fail due to CORS or schema issues
+                    // Try parsing with protobuf using embedded schema
                     try {
-                        const root = await protobuf.load("https://raw.githubusercontent.com/onnx/onnx/main/onnx/onnx.proto");
+                        // Define ONNX protobuf schema inline to avoid 404 errors from external URLs
+                        const onnxProto = `
+                            syntax = "proto3";
+                            package onnx;
+                            
+                            message ModelProto {
+                                int64 ir_version = 1;
+                                repeated string opset_import = 2;
+                                string producer_name = 3;
+                                string producer_version = 4;
+                                string domain = 5;
+                                int64 model_version = 6;
+                                string doc_string = 7;
+                                GraphProto graph = 8;
+                            }
+                            
+                            message GraphProto {
+                                repeated NodeProto node = 1;
+                                string name = 2;
+                                repeated TensorProto initializer = 5;
+                                string doc_string = 10;
+                                repeated ValueInfoProto input = 11;
+                                repeated ValueInfoProto output = 12;
+                            }
+                            
+                            message NodeProto {
+                                repeated string input = 1;
+                                repeated string output = 2;
+                                string name = 3;
+                                string op_type = 4;
+                                string domain = 7;
+                                repeated AttributeProto attribute = 5;
+                            }
+                            
+                            message AttributeProto {
+                                string name = 1;
+                                int32 type = 20;
+                                float f = 2;
+                                int64 i = 3;
+                                bytes s = 4;
+                                TensorProto t = 5;
+                                repeated float floats = 6;
+                                repeated int64 ints = 7;
+                            }
+                            
+                            message TensorProto {
+                                repeated int64 dims = 1;
+                                int32 data_type = 2;
+                                bytes raw_data = 9;
+                                string name = 8;
+                            }
+                            
+                            message ValueInfoProto {
+                                string name = 1;
+                                TypeProto type = 2;
+                            }
+                            
+                            message TypeProto {
+                                TensorTypeProto tensor_type = 1;
+                                
+                                message TensorTypeProto {
+                                    int32 elem_type = 1;
+                                    TensorShapeProto shape = 2;
+                                    
+                                    message TensorShapeProto {
+                                        repeated Dimension dim = 1;
+                                        
+                                        message Dimension {
+                                            oneof value {
+                                                int64 dim_value = 1;
+                                                string dim_param = 2;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        `;
+                        
+                        const root = protobuf.parse(onnxProto).root;
                         const ModelProto = root.lookupType("onnx.ModelProto");
                         
                         const model = ModelProto.decode(uint8Array);
