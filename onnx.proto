@@ -143,7 +143,7 @@ enum TensorProto_DataType {
 message TensorProto {
   repeated int64 dims = 1;
   int32 data_type = 2;
-  TensorProto_Segment segment = 3;
+  Segment segment = 3;
   repeated float float_data = 4;
   repeated int32 int32_data = 5;
   repeated bytes string_data = 6;
@@ -152,7 +152,7 @@ message TensorProto {
   string doc_string = 12;
   bytes raw_data = 9;
   repeated StringStringEntryProto external_data = 13;
-  TensorProto_DataLocation data_location = 14;
+  DataLocation data_location = 14;
   repeated double double_data = 10;
   repeated uint64 uint64_data = 11;
   

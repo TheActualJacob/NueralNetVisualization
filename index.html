@@ -1107,10 +1107,18 @@
                                      'AveragePool', 'GlobalAveragePool', 'Flatten'];
                     
                     const foundOps = [];
+                    const minDistance = 20; // Minimum bytes between consecutive operation definitions
+                    let lastPosition = -minDistance;
+                    
                     opTypes.forEach(opType => {
                         let index = text.indexOf(opType);
                         while (index !== -1) {
-                            foundOps.push({ type: opType, position: index });
+                            // Only include operations that are sufficiently far apart
+                            // and not part of metadata/repeated strings in binary
+                            if (index - lastPosition >= minDistance) {
+                                foundOps.push({ type: opType, position: index });
+                                lastPosition = index;
+                            }
                             index = text.indexOf(opType, index + 1);
                         }
                     });
@@ -1118,18 +1126,37 @@
                     // Sort by position to get layer order
                     foundOps.sort((a, b) => a.position - b.position);
                     
-                    console.log(`Found ${foundOps.length} total operations in sequence`);
+                    // Further filter: remove operations that appear too close together (likely false positives)
+                    const filteredByDistance = [];
+                    foundOps.forEach((op, idx) => {
+                        if (idx === 0) {
+                            filteredByDistance.push(op);
+                        } else {
+                            const prevOp = filteredByDistance[filteredByDistance.length - 1];
+                            if (op.position - prevOp.position > minDistance) {
+                                filteredByDistance.push(op);
+                            }
+                        }
+                    });
+                    
+                    console.log(`Found ${foundOps.length} total operations, filtered to ${filteredByDistance.length} after distance check`);
                     
                     // Track shapes through the network
                     let currentShape = [3, 640, 640]; // Common input for YOLOv8
                     let layerIndex = 0;
+                    let lastOpType = null;
                     
-                    // Process operations in sequence (limit duplicates)
+                    // Process operations in sequence (limit duplicates and consecutive same types)
                     const seenOps = new Map();
-                    foundOps.forEach(op => {
+                    filteredByDistance.forEach(op => {
                         const key = `${op.type}_${op.position}`;
                         if (seenOps.has(key)) return;
+                        
+                        // Skip if same type as previous (likely false positive duplicate)
+                        if (op.type === lastOpType && op.type !== 'Conv' && op.type !== 'Add') return;
+                        
                         seenOps.set(key, true);
+                        lastOpType = op.type;
                         
                         const opType = op.type;
                         let layerType = opType;
@@ -1206,20 +1233,22 @@
                         layerIndex++;
                     });
                     
-                    // Remove consecutive duplicates (same type in a row often means false positives)
-                    const filteredNodes = [];
-                    for (let i = 0; i < nodes.length; i++) {
-                        if (i === 0 || nodes[i].type !== nodes[i-1].type || nodes[i].type === 'Conv2d') {
-                            filteredNodes.push(nodes[i]);
-                        }
+                    // Final validation: limit total layers for sanity
+                    // Most models have 50-500 layers, anything significantly higher likely has false positives
+                    let finalNodes = nodes;
+                    if (nodes.length > 400) {
+                        console.warn(`Detected ${nodes.length} layers - likely false positives. Sampling to 300 layers.`);
+                        // Sample every nth layer to reduce count
+                        const sampleRate = Math.ceil(nodes.length / 300);
+                        finalNodes = nodes.filter((_, idx) => idx % sampleRate === 0);
                     }
                     
-                    if (filteredNodes.length > 0) {
-                        console.log(`Fallback parser extracted ${filteredNodes.length} layers`);
+                    if (finalNodes.length > 0) {
+                        console.log(`Fallback parser extracted ${finalNodes.length} layers (from initial ${nodes.length})`);
                         return {
-                            nodes: filteredNodes,
+                            nodes: finalNodes,
                             totalParams,
-                            totalLayers: filteredNodes.length
+                            totalLayers: finalNodes.length
                         };
                     }
                 } catch (e) {
