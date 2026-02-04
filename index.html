@@ -808,6 +808,8 @@
             const [selectedLayer, setSelectedLayer] = useState(null);
             const [cameraView, setCameraView] = useState('default');
             const [performanceWarning, setPerformanceWarning] = useState(null);
+            const [tourMode, setTourMode] = useState(false);
+            const [explorationMode, setExplorationMode] = useState(false);
             const canvasRef = useRef(null);
             const sceneRef = useRef(null);
             const rendererRef = useRef(null);
@@ -817,6 +819,7 @@
             const convKernelsRef = useRef([]);
             const connectionLinesRef = useRef([]);
             const animationFrameRef = useRef(null);
+            const explorationTimeRef = useRef(0);
 
             useEffect(() => {
                 if (modelData && canvasRef.current) {
@@ -840,6 +843,102 @@
                     return cleanup;
                 }
             }, [isPlaying, animationSpeed]);
+
+            useEffect(() => {
+                // Exploration mode: continuous automated camera movement
+                if (explorationMode && cameraRef.current && controlsRef.current && layerGroupsRef.current.length > 0) {
+                    let animId;
+                    const totalLayers = layerGroupsRef.current.length;
+                    const modelWidth = totalLayers * 2; // Approximate model width
+                    
+                    const animate = () => {
+                        explorationTimeRef.current += 0.01;
+                        const t = explorationTimeRef.current;
+                        
+                        // Cycle through different movement patterns (each pattern lasts ~10 seconds)
+                        const cycle = Math.floor(t / 10) % 6;
+                        const cycleProgress = (t % 10) / 10; // 0 to 1 within each cycle
+                        
+                        const camera = cameraRef.current;
+                        const controls = controlsRef.current;
+                        
+                        switch(cycle) {
+                            case 0: // Orbital rotation around entire model
+                                const orbitRadius = Math.max(30, modelWidth * 0.6);
+                                const orbitAngle = cycleProgress * Math.PI * 2;
+                                camera.position.x = Math.sin(orbitAngle) * orbitRadius;
+                                camera.position.y = 8 + Math.sin(cycleProgress * Math.PI * 4) * 5;
+                                camera.position.z = Math.cos(orbitAngle) * orbitRadius;
+                                controls.target.set(0, 0, 0);
+                                break;
+                                
+                            case 1: // Fly through - travel along the network
+                                const flyProgress = cycleProgress;
+                                const layerIndex = Math.floor(flyProgress * (totalLayers - 1));
+                                const layer = layerGroupsRef.current[layerIndex];
+                                if (layer) {
+                                    const pos = layer.position;
+                                    camera.position.x = pos.x - 5;
+                                    camera.position.y = pos.y + 3;
+                                    camera.position.z = pos.z - 8;
+                                    controls.target.copy(pos);
+                                }
+                                break;
+                                
+                            case 2: // Zoom in/out wave
+                                const zoomDist = 20 + Math.sin(cycleProgress * Math.PI * 3) * 25;
+                                const zoomAngle = cycleProgress * Math.PI * 0.5;
+                                camera.position.x = Math.sin(zoomAngle) * zoomDist;
+                                camera.position.y = 10 + Math.cos(cycleProgress * Math.PI * 2) * 8;
+                                camera.position.z = -Math.abs(Math.cos(zoomAngle)) * zoomDist;
+                                controls.target.set(0, 0, 0);
+                                break;
+                                
+                            case 3: // Top-down sweep
+                                const sweepX = (cycleProgress - 0.5) * modelWidth;
+                                camera.position.x = sweepX;
+                                camera.position.y = 25 + Math.sin(cycleProgress * Math.PI) * 10;
+                                camera.position.z = -15;
+                                controls.target.set(sweepX, 0, 0);
+                                break;
+                                
+                            case 4: // Spiral around random layers
+                                const spiralLayer = Math.floor((cycleProgress * 3) % 1 * totalLayers);
+                                const targetLayer = layerGroupsRef.current[spiralLayer];
+                                if (targetLayer) {
+                                    const spiralAngle = cycleProgress * Math.PI * 6;
+                                    const spiralRadius = 5 + Math.sin(cycleProgress * Math.PI * 2) * 8;
+                                    camera.position.x = targetLayer.position.x + Math.sin(spiralAngle) * spiralRadius;
+                                    camera.position.y = targetLayer.position.y + Math.cos(cycleProgress * Math.PI * 4) * 6;
+                                    camera.position.z = targetLayer.position.z + Math.cos(spiralAngle) * spiralRadius;
+                                    controls.target.copy(targetLayer.position);
+                                }
+                                break;
+                                
+                            case 5: // Wide cinematic pan
+                                const panAngle = (cycleProgress - 0.5) * Math.PI * 0.8;
+                                const panRadius = Math.max(40, modelWidth * 0.8);
+                                camera.position.x = Math.sin(panAngle) * panRadius;
+                                camera.position.y = 15 + Math.sin(cycleProgress * Math.PI) * 5;
+                                camera.position.z = -Math.cos(panAngle) * panRadius * 0.7;
+                                controls.target.set(0, 2, 0);
+                                break;
+                        }
+                        
+                        controls.update();
+                        animId = requestAnimationFrame(animate);
+                    };
+                    
+                    animate();
+                    
+                    return () => {
+                        if (animId) {
+                            cancelAnimationFrame(animId);
+                        }
+                        explorationTimeRef.current = 0;
+                    };
+                }
+            }, [explorationMode]);
 
             useEffect(() => {
                 // Highlight selected layer
@@ -1900,6 +1999,32 @@
                             layerGroupsRef.current.length - 1
                         );
                         
+                        // Tour mode: smoothly move camera to follow active layer
+                        if (tourMode && cameraRef.current && controlsRef.current && layerGroupsRef.current[activeLayerIndex]) {
+                            const activeGroup = layerGroupsRef.current[activeLayerIndex];
+                            const targetPos = activeGroup.position.clone();
+                            
+                            // Determine camera offset based on layer type
+                            const layer = activeGroup.userData.layer;
+                            const isConvLayer = layer && (layer.type === 'Conv2d' || layer.type === 'MaxPool2d');
+                            
+                            // Position camera for optimal viewing
+                            const offset = new THREE.Vector3(
+                                isConvLayer ? -8 : -6,  // Side angle
+                                isConvLayer ? 5 : 3,    // Above
+                                isConvLayer ? -8 : -5   // Back
+                            );
+                            
+                            const desiredCameraPos = targetPos.clone().add(offset);
+                            const desiredTarget = targetPos.clone();
+                            
+                            // Smooth lerp (interpolate) camera position
+                            const lerpFactor = 0.08; // Smoothness (lower = smoother)
+                            cameraRef.current.position.lerp(desiredCameraPos, lerpFactor);
+                            controlsRef.current.target.lerp(desiredTarget, lerpFactor);
+                            controlsRef.current.update();
+                        }
+                        
                         // Animate connection lines
                         connectionLinesRef.current.forEach((line) => {
                             const { fromIndex, toIndex } = line.userData;
@@ -2071,6 +2196,33 @@
                 }
                 setIsPlaying(!isPlaying);
             };
+            
+            const toggleTourMode = () => {
+                setTourMode(!tourMode);
+                if (!tourMode && !isPlaying) {
+                    // Start animation when enabling tour mode if not already playing
+                    setIsPlaying(true);
+                    if (animationProgress >= 100) {
+                        setAnimationProgress(0);
+                    }
+                }
+                // Disable exploration mode when enabling tour mode
+                if (!tourMode && explorationMode) {
+                    setExplorationMode(false);
+                    explorationTimeRef.current = 0;
+                }
+            };
+            
+            const toggleExplorationMode = () => {
+                setExplorationMode(!explorationMode);
+                // Disable tour mode when enabling exploration mode
+                if (!explorationMode && tourMode) {
+                    setTourMode(false);
+                }
+                if (!explorationMode) {
+                    explorationTimeRef.current = 0;
+                }
+            };
 
             const resetView = () => {
                 if (cameraRef.current && controlsRef.current) {
@@ -2082,6 +2234,9 @@
                 setSelectedLayer(null);
                 setAnimationProgress(0);
                 setIsPlaying(false);
+                setTourMode(false);
+                setExplorationMode(false);
+                explorationTimeRef.current = 0;
                 
                 // Reset all node opacities
                 layerGroupsRef.current.forEach(group => {
@@ -2256,6 +2411,30 @@
                                     <div className="viz-header">
                                         <h2 className="viz-title">Network Architecture</h2>
                                         <div className="controls">
+                                            <button 
+                                                className={`control-button ${tourMode ? 'active' : ''}`}
+                                                onClick={toggleTourMode}
+                                                style={tourMode ? {
+                                                    background: 'linear-gradient(135deg, #2563eb 0%, #7c3aed 100%)',
+                                                    color: 'white',
+                                                    fontWeight: '600',
+                                                    boxShadow: '0 4px 12px rgba(37, 99, 235, 0.4)'
+                                                } : {}}
+                                            >
+                                                {tourMode ? 'Tour Active' : 'Tour Mode'}
+                                            </button>
+                                            <button 
+                                                className={`control-button ${explorationMode ? 'active' : ''}`}
+                                                onClick={toggleExplorationMode}
+                                                style={explorationMode ? {
+                                                    background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                                                    color: 'white',
+                                                    fontWeight: '600',
+                                                    boxShadow: '0 4px 12px rgba(16, 185, 129, 0.4)'
+                                                } : {}}
+                                            >
+                                                {explorationMode ? 'Exploring' : 'Auto Explore'}
+                                            </button>
                                             <button className="control-button" onClick={resetView}>
                                                 Reset View
                                             </button>
