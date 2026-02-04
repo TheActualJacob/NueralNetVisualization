@@ -810,6 +810,8 @@
             const [performanceWarning, setPerformanceWarning] = useState(null);
             const [tourMode, setTourMode] = useState(false);
             const [explorationMode, setExplorationMode] = useState(false);
+            const [newsletterEmail, setNewsletterEmail] = useState('');
+            const [newsletterSubmitted, setNewsletterSubmitted] = useState(false);
             const canvasRef = useRef(null);
             const sceneRef = useRef(null);
             const rendererRef = useRef(null);
@@ -1209,15 +1211,38 @@
                                 
                                 attributes = { kernel_size: kernelSize, stride: stride };
                             } else if (layerType === 'Linear') {
-                                // Get weight dimensions
-                                if (node.input.length > 1 && initializers.has(node.input[1])) {
-                                    const weightDims = initializers.get(node.input[1]);
-                                    if (weightDims.length === 2) {
-                                        const [outFeatures, inFeatures] = weightDims.map(Number);
-                                        params = outFeatures * inFeatures;
-                                        outputShape = [outFeatures];
-                                        attributes = { in_features: inFeatures, out_features: outFeatures };
+                                // Get weight dimensions - check all inputs for weights
+                                let foundWeight = false;
+                                for (let i = 0; i < node.input.length; i++) {
+                                    if (initializers.has(node.input[i])) {
+                                        const weightDims = initializers.get(node.input[i]);
+                                        if (weightDims.length === 2) {
+                                            // For Gemm: weight is typically [K, N] where input is [M, K] and output is [M, N]
+                                            // For PyTorch convention: [out_features, in_features]
+                                            const [dim0, dim1] = weightDims.map(Number);
+                                            
+                                            // Check if we need to transpose based on Gemm attributes
+                                            let transB = false;
+                                            node.attribute?.forEach(attr => {
+                                                if (attr.name === 'transB' && attr.i === 1) transB = true;
+                                            });
+                                            
+                                            // When transB=1: weight [K,N] becomes [N,K]^T, so input is N, output is K
+                                            const inFeatures = transB ? dim1 : dim0;
+                                            const outFeatures = transB ? dim0 : dim1;
+                                            
+                                            params = outFeatures * inFeatures;
+                                            inputShape = [inFeatures];
+                                            outputShape = [outFeatures];
+                                            attributes = { in_features: inFeatures, out_features: outFeatures };
+                                            console.log(`Linear layer ${nodeName}: ${inFeatures} -> ${outFeatures}, params: ${params} (weight dims: ${weightDims}, transB: ${transB})`);
+                                            foundWeight = true;
+                                            break;
+                                        }
                                     }
+                                }
+                                if (!foundWeight) {
+                                    console.warn(`Linear layer ${nodeName}: No 2D weight found in inputs:`, node.input);
                                 }
                             } else if (layerType === 'Flatten' || layerType === 'Reshape') {
                                 if (inputShape.length > 1) {
@@ -1719,13 +1744,20 @@
                 const inputSize = layer.nodes.input[0];
                 const outputSize = layer.nodes.output[0];
                 
+                console.log(`Creating Linear layer visualization: ${layer.name}, input: ${inputSize}, output: ${outputSize}`);
+                
                 // Scale for visualization - reduce nodes shown for very large layers
                 const maxNodes = 50;
                 const displayInputs = Math.min(inputSize, maxNodes);
                 const displayOutputs = Math.min(outputSize, maxNodes);
                 
-                const inputSpacing = 0.3;
-                const outputSpacing = 0.3;
+                // Scale spacing based on actual layer size (even if we cap displayed nodes)
+                // This makes larger layers visually larger
+                const inputScale = Math.sqrt(inputSize / maxNodes);
+                const outputScale = Math.sqrt(outputSize / maxNodes);
+                
+                const inputSpacing = 0.3 * Math.max(1, inputScale);
+                const outputSpacing = 0.3 * Math.max(1, outputScale);
                 const layerDepth = 3;
                 
                 // Input nodes
@@ -2576,6 +2608,41 @@
                 if (num >= 1000) return `${(num / 1000).toFixed(2)}K`;
                 return num.toString();
             };
+            
+            const handleNewsletterSignup = async (e) => {
+                e.preventDefault();
+                if (!newsletterEmail || !newsletterEmail.includes('@')) {
+                    alert('Please enter a valid email address');
+                    return;
+                }
+                
+                try {
+                    // Use FormSubmit.co to forward the email
+                    const formData = new FormData();
+                    formData.append('email', newsletterEmail);
+                    formData.append('_subject', 'New Machine Learning Newsletter Signup');
+                    formData.append('_captcha', 'false');
+                    formData.append('_template', 'box');
+                    
+                    const response = await fetch('https://formsubmit.co/jacobrryan1@gmail.com', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    if (response.ok) {
+                        setNewsletterSubmitted(true);
+                        setTimeout(() => {
+                            setNewsletterEmail('');
+                            setNewsletterSubmitted(false);
+                        }, 3000);
+                    } else {
+                        alert('Error submitting. Please try again.');
+                    }
+                } catch (error) {
+                    console.error('Newsletter signup error:', error);
+                    alert('Error submitting. Please try again.');
+                }
+            };
 
             return (
                 <div className="app-container">
@@ -2866,9 +2933,71 @@
                                             </div>
                                         </div>
                                     </div>
-                                )}
+)}
                             </>
                         )}
+                        
+                        <div style={{
+                            marginTop: '48px',
+                            padding: '32px',
+                            background: 'linear-gradient(135deg, #2563eb 0%, #7c3aed 100%)',
+                            borderRadius: '12px',
+                            textAlign: 'center',
+                            boxShadow: '0 4px 16px rgba(37, 99, 235, 0.3)'
+                        }}>
+                            <h3 style={{ color: 'white', fontSize: '1.5rem', marginBottom: '8px', fontWeight: 600 }}>Machine Learning Newsletter</h3>
+                            <p style={{ color: 'rgba(255, 255, 255, 0.9)', marginBottom: '24px', fontSize: '1rem' }}>Stay updated with the latest in neural networks and AI visualization</p>
+                            
+                            {newsletterSubmitted ? (
+                                <div style={{ 
+                                    padding: '16px', 
+                                    background: 'rgba(255, 255, 255, 0.2)', 
+                                    borderRadius: '8px',
+                                    color: 'white',
+                                    fontWeight: 500
+                                }}>
+                                    ✓ Thank you for subscribing! You'll receive updates soon.
+                                </div>
+                            ) : (
+                                <form onSubmit={handleNewsletterSignup} style={{ display: 'flex', gap: '12px', maxWidth: '500px', margin: '0 auto', flexWrap: 'wrap', justifyContent: 'center' }}>
+                                    <input
+                                        type="email"
+                                        value={newsletterEmail}
+                                        onChange={(e) => setNewsletterEmail(e.target.value)}
+                                        placeholder="Enter your email"
+                                        style={{
+                                            flex: '1',
+                                            minWidth: '250px',
+                                            padding: '12px 16px',
+                                            borderRadius: '8px',
+                                            border: 'none',
+                                            fontSize: '1rem',
+                                            outline: 'none'
+                                        }}
+                                        required
+                                    />
+                                    <button
+                                        type="submit"
+                                        style={{
+                                            padding: '12px 32px',
+                                            background: 'white',
+                                            color: '#2563eb',
+                                            border: 'none',
+                                            borderRadius: '8px',
+                                            fontSize: '1rem',
+                                            fontWeight: 600,
+                                            cursor: 'pointer',
+                                            transition: 'all 0.2s ease',
+                                            boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
+                                        }}
+                                        onMouseOver={(e) => e.target.style.transform = 'scale(1.05)'}
+                                        onMouseOut={(e) => e.target.style.transform = 'scale(1)'}
+                                    >
+                                        Subscribe
+                                    </button>
+                                </form>
+                            )}
+                        </div>
                     </div>
                 </div>
             );
