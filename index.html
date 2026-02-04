@@ -623,10 +623,11 @@
                 this.target = new THREE.Vector3();
                 this.minDistance = 5;
                 this.maxDistance = 100;
-                this.enableDamping = true;
+                this.enableDamping = false;
                 this.dampingFactor = 0.05;
                 
-                this.rotateSpeed = 0.3;
+                this.rotateSpeed = 0.5;
+                this.panSpeed = 0.5;
                 this.zoomSpeed = 0.5;
                 
                 this.spherical = new THREE.Spherical();
@@ -642,6 +643,8 @@
                 this.domElement.addEventListener('mousedown', this.onMouseDown.bind(this));
                 this.domElement.addEventListener('wheel', this.onMouseWheel.bind(this));
                 this.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
+                
+                window.addEventListener('keydown', this.onKeyDown.bind(this));
             }
             
             onMouseDown(event) {
@@ -649,8 +652,15 @@
                     this.isRotating = true;
                     this.rotateStart.set(event.clientX, event.clientY);
                     
-                    document.addEventListener('mousemove', this.onMouseMove.bind(this));
-                    document.addEventListener('mouseup', this.onMouseUp.bind(this));
+                    const moveHandler = this.onMouseMove.bind(this);
+                    const upHandler = () => {
+                        this.isRotating = false;
+                        document.removeEventListener('mousemove', moveHandler);
+                        document.removeEventListener('mouseup', upHandler);
+                    };
+                    
+                    document.addEventListener('mousemove', moveHandler);
+                    document.addEventListener('mouseup', upHandler);
                 }
             }
             
@@ -660,7 +670,7 @@
                     this.rotateDelta.subVectors(this.rotateEnd, this.rotateStart).multiplyScalar(this.rotateSpeed);
                     
                     const element = this.domElement;
-                    this.sphericalDelta.theta -= 2 * Math.PI * this.rotateDelta.x / element.clientHeight;
+                    this.sphericalDelta.theta -= 2 * Math.PI * this.rotateDelta.x / element.clientWidth;
                     this.sphericalDelta.phi -= 2 * Math.PI * this.rotateDelta.y / element.clientHeight;
                     
                     this.rotateStart.copy(this.rotateEnd);
@@ -668,10 +678,49 @@
                 }
             }
             
-            onMouseUp() {
-                this.isRotating = false;
-                document.removeEventListener('mousemove', this.onMouseMove.bind(this));
-                document.removeEventListener('mouseup', this.onMouseUp.bind(this));
+            onKeyDown(event) {
+                const panAmount = 20;
+                
+                switch(event.key) {
+                    case 'ArrowLeft':
+                        this.pan(-panAmount, 0);
+                        this.update();
+                        break;
+                    case 'ArrowRight':
+                        this.pan(panAmount, 0);
+                        this.update();
+                        break;
+                    case 'ArrowUp':
+                        this.pan(0, panAmount);
+                        this.update();
+                        break;
+                    case 'ArrowDown':
+                        this.pan(0, -panAmount);
+                        this.update();
+                        break;
+                }
+            }
+            
+            pan(deltaX, deltaY) {
+                const element = this.domElement;
+                const offset = new THREE.Vector3();
+                
+                // Calculate the pan offset in camera space
+                const position = this.camera.position;
+                offset.copy(position).sub(this.target);
+                let targetDistance = offset.length();
+                
+                targetDistance *= Math.tan((this.camera.fov / 2) * Math.PI / 180.0);
+                
+                const panX = new THREE.Vector3();
+                panX.setFromMatrixColumn(this.camera.matrix, 0);
+                panX.multiplyScalar(-2 * deltaX * targetDistance / element.clientHeight);
+                
+                const panY = new THREE.Vector3();
+                panY.setFromMatrixColumn(this.camera.matrix, 1);
+                panY.multiplyScalar(2 * deltaY * targetDistance / element.clientHeight);
+                
+                this.panOffset.add(panX).add(panY);
             }
             
             onMouseWheel(event) {
@@ -705,16 +754,14 @@
                 offset.setFromSpherical(this.spherical);
                 offset.applyQuaternion(quatInverse);
                 
+                // Apply pan offset
+                this.target.add(this.panOffset);
+                
                 position.copy(this.target).add(offset);
                 this.camera.lookAt(this.target);
                 
-                if (this.enableDamping) {
-                    this.sphericalDelta.theta *= (1 - this.dampingFactor);
-                    this.sphericalDelta.phi *= (1 - this.dampingFactor);
-                } else {
-                    this.sphericalDelta.set(0, 0, 0);
-                }
-                
+                // Always reset deltas immediately (no damping)
+                this.sphericalDelta.set(0, 0, 0);
                 this.scale = 1;
                 this.panOffset.set(0, 0, 0);
                 
@@ -725,6 +772,7 @@
                 this.target.set(0, 0, 0);
                 this.sphericalDelta.set(0, 0, 0);
                 this.scale = 1;
+                this.panOffset.set(0, 0, 0);
                 this.update();
             }
         }
